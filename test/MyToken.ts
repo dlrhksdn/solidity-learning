@@ -19,34 +19,47 @@ describe("My Token", () => {
     ]);
   });
 
-  describe("TransferFrom (approve & transferFrom)", () => {
-    it("signer1 moves signer0 token using approve & transferFrom and checks balances", async () => {
-      const signer0 = signers[0];
-      const signer1 = signers[1];
+  describe("ERC20 Delegation Operations", () => {
+    it("should successfully execute a delegated transfer (Approve -> TransferFrom)", async () => {
+      // 0. 준비: 계정 명칭과 전송 금액 변경
+      const [owner, delegate] = await ethers.getSigners();
+      const vaultAmount = ethers.parseUnits("100", 18); // 초기 발행량
+      const allowanceLimit = ethers.parseUnits("15.5", 18); // 15.5 MT (수치 변경)
 
-      const amount = hre.ethers.parseUnits("10", decimals); // 10 MT
+      // [Step A] 권한 위임 (Authorization)
+      // 명칭 변경: 'approve' 과정을 '권한 위임'으로 표현
+      const authTx = await myTokenC
+        .connect(owner)
+        .approve(delegate.address, allowanceLimit);
 
-      // 1) approve: signer0가 signer1에게 권한 부여
-      await expect(myTokenC.approve(signer1.address, amount))
+      await expect(authTx)
         .to.emit(myTokenC, "Approval")
-        .withArgs(signer0.address, signer1.address, amount);
+        .withArgs(owner.address, delegate.address, allowanceLimit);
 
-      await expect(
-        myTokenC
-          .connect(signer1)
-          .transferFrom(signer0.address, signer1.address, amount)
-      )
+      // [Step B] 대리 전송 실행 (Pull Mechanism)
+      // signer1이 signer0의 자산을 자신에게로 '당겨오는' 로직
+      const pullTx = await myTokenC
+        .connect(delegate)
+        .transferFrom(owner.address, delegate.address, allowanceLimit);
+
+      await expect(pullTx)
         .to.emit(myTokenC, "Transfer")
-        .withArgs(signer0.address, signer1.address, amount);
+        .withArgs(owner.address, delegate.address, allowanceLimit);
 
-      const bal0 = await myTokenC.balanceOf(signer0.address);
-      const bal1 = await myTokenC.balanceOf(signer1.address);
+      // [Step C] 최종 잔액 감사 (Audit)
+      const ownerFinalBalance = await myTokenC.balanceOf(owner.address);
+      const delegateFinalBalance = await myTokenC.balanceOf(delegate.address);
 
-      expect(bal1).to.equal(amount);
-      expect(bal0).to.equal(hre.ethers.parseUnits("100", decimals) - amount);
+      // 산식으로 검증: $100 - 15.5 = 84.5$
+      expect(ownerFinalBalance).to.equal(vaultAmount - allowanceLimit);
+      expect(delegateFinalBalance).to.equal(allowanceLimit);
 
-      const remain = await myTokenC.allowance(signer0.address, signer1.address);
-      expect(remain).to.equal(0n);
+      // 추가 검증: 남은 권한(Allowance)이 0인지 확인
+      const remainingLimit = await myTokenC.allowance(
+        owner.address,
+        delegate.address
+      );
+      expect(remainingLimit).to.equal(0n);
     });
   });
 });
