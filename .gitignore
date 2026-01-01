@@ -19,3 +19,7 @@ ignition/deployments/chain-31337
 Cprojects
 Cprojects.pub
 ssh-keygen
+
+id_ed25519
+id_ed25519.pub
+*.pub
