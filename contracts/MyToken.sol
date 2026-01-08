@@ -1,62 +1,73 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-contract MyToken {
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
+import "./AdminAuthority.sol";
+
+/**
+ * @title
+ * @dev
+ */
+contract MyToken is AdminAuthority {
+    event AssetTransfer(address indexed sender, address indexed recipient, uint256 quantity);
+    event AccessGranted(address indexed authorizedSpender, uint256 quantity);
 
     string public name;
     string public symbol;
     uint8 public decimals;
-
     uint256 public totalSupply;
+
     mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
+    mapping(address => mapping(address => uint256)) public permittedAmount;
 
     constructor(
         string memory _name,
         string memory _symbol,
         uint8 _decimal,
-        uint256 _amount
-    ) {
+        uint256 _initialStock
+    ) AdminAuthority(msg.sender, msg.sender) {
         name = _name;
         symbol = _symbol;
         decimals = _decimal;
-
-        _mint(_amount * 10 ** uint256(decimals), msg.sender);
+        
+        _internalMint(_initialStock * 10 ** uint256(decimals), msg.sender);
     }
 
-    function approve(address spender, uint256 amount) external {
-        allowance[msg.sender][spender] = amount;
-        emit Approval(msg.sender, spender, amount);
+    function approve(address _authorizedSpender, uint256 _quantity) external {
+        permittedAmount[msg.sender][_authorizedSpender] = _quantity;
+        emit AccessGranted(_authorizedSpender, _quantity);
     }
 
-    function transfer(uint256 amount, address to) external {
-        require(balanceOf[msg.sender] >= amount, "insufficient balance");
+    function transfer(uint256 _quantity, address _recipient) external {
+        require(balanceOf[msg.sender] >= _quantity, "MyToken: insufficient balance");
+        
+        balanceOf[msg.sender] -= _quantity;
+        balanceOf[_recipient] += _quantity;
 
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-
-        emit Transfer(msg.sender, to, amount);
+        emit AssetTransfer(msg.sender, _recipient, _quantity);
     }
 
-    function transferFrom(address from, address to, uint256 amount) external {
-        address spender = msg.sender;
+    function transferFrom(address _sender, address _recipient, uint256 _quantity) external {
+        require(permittedAmount[_sender][msg.sender] >= _quantity, "MyToken: insufficient allowance");
+        require(balanceOf[_sender] >= _quantity, "MyToken: insufficient balance");
 
-        require(allowance[from][spender] >= amount, "insufficient allowance");
-        require(balanceOf[from] >= amount, "insufficient balance");
+        permittedAmount[_sender][msg.sender] -= _quantity;
+        balanceOf[_sender] -= _quantity;
+        balanceOf[_recipient] += _quantity;
 
-        allowance[from][spender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-
-        emit Transfer(from, to, amount);
+        emit AssetTransfer(_sender, _recipient, _quantity);
     }
 
-    function _mint(uint256 amount, address owner) internal {
-        totalSupply += amount;
-        balanceOf[owner] += amount;
+    function mint(uint256 _quantity, address _recipient) external validateManager {
+        _internalMint(_quantity, _recipient);
+    }
 
-        emit Transfer(address(0), owner, amount);
+    function setManager(address _newManager) external validateOwner {
+        manager = _newManager;
+    }
+
+    function _internalMint(uint256 _quantity, address _recipient) internal {
+        totalSupply += _quantity;
+        balanceOf[_recipient] += _quantity;
+        emit AssetTransfer(address(0), _recipient, _quantity);
     }
 }

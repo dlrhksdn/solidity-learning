@@ -2,64 +2,115 @@ import hre from "hardhat";
 import { expect } from "chai";
 import { MyToken } from "../typechain-types";
 import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
+import { DECIMALS, MINTING_AMOUNT } from "./constant";
 
-const decimals = 18n;
-
-describe("My Token", () => {
+describe("MyToken: Functional & Security Analysis", () => {
   let myTokenC: MyToken;
   let signers: HardhatEthersSigner[];
+  let signer0: HardhatEthersSigner;
+  let signer1: HardhatEthersSigner;
+  let hacker: HardhatEthersSigner;
 
-  beforeEach(async () => {
+  beforeEach("Environment Setup: Deploying MyToken", async () => {
     signers = await hre.ethers.getSigners();
+    [signer0, signer1, hacker] = signers; // 구조 분해 할당으로 명확화
+
     myTokenC = await hre.ethers.deployContract("MyToken", [
       "MyToken",
       "MT",
-      18,
-      100,
+      DECIMALS,
+      MINTING_AMOUNT,
     ]);
   });
 
-  describe("ERC20 Delegation Operations", () => {
-    it("should successfully execute a delegated transfer (Approve -> TransferFrom)", async () => {
-      // 0. 준비: 계정 명칭과 전송 금액 변경
-      const [owner, delegate] = await ethers.getSigners();
-      const vaultAmount = ethers.parseUnits("100", 18); // 초기 발행량
-      const allowanceLimit = ethers.parseUnits("15.5", 18); // 15.5 MT (수치 변경)
+  describe("Metadata & Initial State Verification", () => {
+    it("verify: token metadata (name, symbol, decimals)", async () => {
+      expect(await myTokenC.name()).to.equal("MyToken");
+      expect(await myTokenC.symbol()).to.equal("MT");
+      expect(await myTokenC.decimals()).to.equal(DECIMALS);
+    });
 
-      // [Step A] 권한 위임 (Authorization)
-      // 명칭 변경: 'approve' 과정을 '권한 위임'으로 표현
-      const authTx = await myTokenC
-        .connect(owner)
-        .approve(delegate.address, allowanceLimit);
+    it("verify: initial total supply calculation", async () => {
+      const expectedSupply = MINTING_AMOUNT * 10n ** BigInt(DECIMALS);
+      expect(await myTokenC.totalSupply()).to.equal(expectedSupply);
+    });
+  });
 
-      await expect(authTx)
-        .to.emit(myTokenC, "Approval")
-        .withArgs(owner.address, delegate.address, allowanceLimit);
+  describe("Minting Mechanics & Access Control", () => {
+    it("success: owner should increase balance through minting", async () => {
+      const targetVolume = hre.ethers.parseUnits("1", DECIMALS);
+      const initialBalance = await myTokenC.balanceOf(signer0.address);
 
-      // [Step B] 대리 전송 실행 (Pull Mechanism)
-      // signer1이 signer0의 자산을 자신에게로 '당겨오는' 로직
-      const pullTx = await myTokenC
-        .connect(delegate)
-        .transferFrom(owner.address, delegate.address, allowanceLimit);
+      await myTokenC.mint(targetVolume, signer0.address);
 
-      await expect(pullTx)
-        .to.emit(myTokenC, "Transfer")
-        .withArgs(owner.address, delegate.address, allowanceLimit);
-
-      // [Step C] 최종 잔액 감사 (Audit)
-      const ownerFinalBalance = await myTokenC.balanceOf(owner.address);
-      const delegateFinalBalance = await myTokenC.balanceOf(delegate.address);
-
-      // 산식으로 검증: $100 - 15.5 = 84.5$
-      expect(ownerFinalBalance).to.equal(vaultAmount - allowanceLimit);
-      expect(delegateFinalBalance).to.equal(allowanceLimit);
-
-      // 추가 검증: 남은 권한(Allowance)이 0인지 확인
-      const remainingLimit = await myTokenC.allowance(
-        owner.address,
-        delegate.address
+      expect(await myTokenC.balanceOf(signer0.address)).to.equal(
+        initialBalance + targetVolume
       );
-      expect(remainingLimit).to.equal(0n);
+    });
+
+    it("security: unauthorized minting attempt must be reverted", async () => {
+      const unauthorizedMintAmount = hre.ethers.parseUnits("100", DECIMALS);
+
+      await expect(
+        myTokenC.connect(hacker).mint(unauthorizedMintAmount, hacker.address)
+      ).to.be.revertedWith("You are not authorized to manage this contract");
+    });
+  });
+
+  describe("Transfer & Allowance Logic Flow", () => {
+    it("process: standard transfer with event emission", async () => {
+      const transferVolume = hre.ethers.parseUnits("0.5", DECIMALS);
+
+      await expect(myTokenC.transfer(transferVolume, signer1.address))
+        .to.emit(myTokenC, "Transfer")
+        .withArgs(signer0.address, signer1.address, transferVolume);
+
+      expect(await myTokenC.balanceOf(signer1.address)).to.equal(
+        transferVolume
+      );
+    });
+
+    it("revert: transfer attempt exceeding current balance", async () => {
+      const excessiveAmount = hre.ethers.parseUnits(
+        (MINTING_AMOUNT + 1n).toString(),
+        DECIMALS
+      );
+
+      await expect(
+        myTokenC.transfer(excessiveAmount, signer1.address)
+      ).to.be.revertedWith("insufficient balance");
+    });
+
+    describe("Delegated Transfer (TransferFrom)", () => {
+      const approvalLimit = hre.ethers.parseUnits("10", DECIMALS);
+
+      it("verify: approval event and allowance state", async () => {
+        await expect(myTokenC.approve(signer1.address, approvalLimit))
+          .to.emit(myTokenC, "Approval")
+          .withArgs(signer0.address, signer1.address, approvalLimit);
+      });
+
+      it("audit: balance changes after transferFrom execution", async () => {
+        const moveAmount = hre.ethers.parseUnits("1", DECIMALS);
+
+        await myTokenC.approve(signer1.address, moveAmount);
+
+        const preBalanceOwner = await myTokenC.balanceOf(signer0.address);
+        const preBalanceRecipient = await myTokenC.balanceOf(signer1.address);
+
+        await expect(
+          myTokenC
+            .connect(signer1)
+            .transferFrom(signer0.address, signer1.address, moveAmount)
+        ).to.emit(myTokenC, "Transfer");
+
+        expect(await myTokenC.balanceOf(signer0.address)).to.equal(
+          preBalanceOwner - moveAmount
+        );
+        expect(await myTokenC.balanceOf(signer1.address)).to.equal(
+          preBalanceRecipient + moveAmount
+        );
+      });
     });
   });
 });
